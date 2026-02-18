@@ -94,14 +94,34 @@ jobs:
           }
           Write-Host "RDP service OK (local)."
 
-      - name: Install Ollama (winget)
-        shell: powershell
+      - name: Install Ollama (winget) + fix PATH
+        shell: pwsh
         run: |
-          winget install --id=Ollama.Ollama -e --silent --accept-package-agreements --accept-source-agreements
-          ollama --version
+          winget install --id Ollama.Ollama -e --silent --accept-package-agreements --accept-source-agreements
+
+          # Ollama installe souvent le binaire dans %LOCALAPPDATA%\Programs\Ollama
+          # mais le PATH de la session GitHub Actions ne se met pas toujours à jour automatiquement. [web:147]
+          $candidates = @(
+            "$env:LOCALAPPDATA\Programs\Ollama\ollama.exe",
+            "$env:ProgramFiles\Ollama\ollama.exe",
+            "$env:ProgramFiles(x86)\Ollama\ollama.exe"
+          )
+
+          $ollamaExe = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+
+          if (-not $ollamaExe) {
+            $found = Get-ChildItem -Path $env:LOCALAPPDATA -Recurse -Filter "ollama.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($found) { $ollamaExe = $found.FullName }
+          }
+
+          if (-not $ollamaExe) { throw "ollama.exe introuvable après installation" }
+
+          (Split-Path $ollamaExe) | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+          & $ollamaExe --version
 
       - name: Pull model (optional but recommended)
-        shell: powershell
+        shell: pwsh
         run: |
           ollama pull $env:OLLAMA_MODEL
 
@@ -114,8 +134,8 @@ jobs:
           openclaw --version
 
           # Tell OpenClaw to use local Ollama (API on localhost:11434)
-          # (OpenClaw docs indicate it can auto-detect Ollama when OLLAMA_API_KEY is set.)
-          echo "OLLAMA_API_KEY=local" >> $env:GITHUB_ENV
+          # (OpenClaw can auto-detect Ollama when OLLAMA_API_KEY is set.)
+          "OLLAMA_API_KEY=local" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Maintain connection (RDP info)
         shell: powershell
