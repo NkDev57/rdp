@@ -94,15 +94,15 @@ jobs:
           $configFile = Join-Path $configDir "rclone.conf"
 
           @"
-[r2cineprimee]
-type = s3
-provider = Cloudflare
-access_key_id = $($env:R2_ACCESS_KEY_ID)
-secret_access_key = $($env:R2_SECRET_ACCESS_KEY)
-region = auto
-endpoint = $($env:R2_ENDPOINT)
-acl = private
-"@ | Set-Content -Path $configFile -Encoding UTF8
+          [r2cineprimee]
+          type = s3
+          provider = Cloudflare
+          access_key_id = $($env:R2_ACCESS_KEY_ID)
+          secret_access_key = $($env:R2_SECRET_ACCESS_KEY)
+          region = auto
+          endpoint = $($env:R2_ENDPOINT)
+          acl = private
+          "@ | Set-Content -Path $configFile -Encoding UTF8
 
           & $rcloneExe version
           & $rcloneExe lsd r2cineprimee:
