@@ -95,7 +95,7 @@ jobs:
           $configContent = "[r2cineprimee]`ntype = s3`nprovider = Cloudflare`naccess_key_id = $($env:R2_ACCESS_KEY_ID)`nsecret_access_key = $($env:R2_SECRET_ACCESS_KEY)`nregion = auto`nendpoint = $($env:R2_ENDPOINT)`nacl = private"
           $configContent | Set-Content -Path $configFile -Encoding UTF8
           & $rcloneExe version
-          & $rcloneExe lsd r2cineprimee:
+          & $rcloneExe lsd "r2cineprimee:$($env:R2_BUCKET)"
 
       - name: Keep job alive
         shell: pwsh
