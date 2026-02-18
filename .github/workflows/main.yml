@@ -1,0 +1,121 @@
+name: RDP + Rclone R2 (self-hosted)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  secure-rdp:
+    runs-on: [self-hosted, windows]
+    timeout-minutes: 3600
+
+    steps:
+      - name: Get server Tailscale IP
+        shell: pwsh
+        run: |
+          $ts = (Get-Command tailscale -ErrorAction SilentlyContinue).Source
+          if (-not $ts) { $ts = "$env:ProgramFiles\Tailscale\tailscale.exe" }
+          if (-not (Test-Path $ts)) { throw "Tailscale not found on this runner" }
+
+          $serverIP = (& $ts ip -4).Trim()
+          if ([string]::IsNullOrWhiteSpace($serverIP)) { throw "No Tailscale IP returned" }
+
+          "TAILSCALE_IP=$serverIP" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "Server Tailscale IP: $serverIP"
+
+      - name: Create/Update RDP user (password from secret)
+        shell: pwsh
+        run: |
+          $password = "${{ secrets.RDP_PASSWORD }}"
+          if ([string]::IsNullOrWhiteSpace($password)) { throw "Missing secrets.RDP_PASSWORD" }
+
+          $securePass = ConvertTo-SecureString $password -AsPlainText -Force
+
+          $u = Get-LocalUser -Name "RDP" -ErrorAction SilentlyContinue
+          if (-not $u) {
+            New-LocalUser -Name "RDP" -Password $securePass -AccountNeverExpires | Out-Null
+          } else {
+            Set-LocalUser -Name "RDP" -Password $securePass
+          }
+
+          Add-LocalGroupMember -Group "Administrators" -Member "RDP" -ErrorAction SilentlyContinue
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP" -ErrorAction SilentlyContinue
+
+      - name: Enable RDP service (optional but safe)
+        shell: pwsh
+        run: |
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
+          Restart-Service -Name TermService -Force
+
+      - name: Restrict Windows Firewall RDP to your Tailscale IP (Option B)
+        shell: pwsh
+        run: |
+          $clientIP = "${{ secrets.TS_CLIENT_IP }}"
+          if ([string]::IsNullOrWhiteSpace($clientIP)) { throw "Missing secrets.TS_CLIENT_IP (your PC Tailscale 100.x.x.x)" }
+
+          $serverIP = "$env:TAILSCALE_IP"
+          if ([string]::IsNullOrWhiteSpace($serverIP)) { throw "Missing env TAILSCALE_IP" }
+
+          netsh advfirewall firewall delete rule name="RDP-Tailscale" | Out-Null
+
+          netsh advfirewall firewall add rule name="RDP-Tailscale" `
+            dir=in action=allow protocol=TCP localport=3389 `
+            remoteip=$clientIP localip=$serverIP profile=any
+
+      - name: Install rclone + configure Cloudflare R2 remote
+        shell: pwsh
+        env:
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:R2_ACCESS_KEY_ID)) { throw "Missing R2_ACCESS_KEY_ID" }
+          if ([string]::IsNullOrWhiteSpace($env:R2_SECRET_ACCESS_KEY)) { throw "Missing R2_SECRET_ACCESS_KEY" }
+          if ([string]::IsNullOrWhiteSpace($env:R2_ENDPOINT)) { throw "Missing R2_ENDPOINT" }
+
+          $zipPath = Join-Path $env:TEMP "rclone.zip"
+          $tempDir = Join-Path $env:TEMP "rclone-temp"
+          $installDir = "C:\rclone"
+          $rcloneExe = Join-Path $installDir "rclone.exe"
+
+          if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
+          if (Test-Path $tempDir) { Remove-Item $tempDir -Recurse -Force }
+          if (-not (Test-Path $installDir)) { New-Item -ItemType Directory -Path $installDir | Out-Null }
+
+          Invoke-WebRequest -Uri "https://downloads.rclone.org/rclone-current-windows-amd64.zip" -OutFile $zipPath
+          Expand-Archive -Path $zipPath -DestinationPath $tempDir -Force
+
+          $found = Get-ChildItem -Path $tempDir -Recurse -Filter "rclone.exe" | Select-Object -First 1
+          if (-not $found) { throw "rclone.exe introuvable" }
+          Copy-Item $found.FullName $rcloneExe -Force
+
+          $configDir = Join-Path $env:APPDATA "rclone"
+          if (-not (Test-Path $configDir)) { New-Item -ItemType Directory -Path $configDir | Out-Null }
+          $configFile = Join-Path $configDir "rclone.conf"
+
+          @"
+[r2cineprimee]
+type = s3
+provider = Cloudflare
+access_key_id = $($env:R2_ACCESS_KEY_ID)
+secret_access_key = $($env:R2_SECRET_ACCESS_KEY)
+region = auto
+endpoint = $($env:R2_ENDPOINT)
+acl = private
+"@ | Set-Content -Path $configFile -Encoding UTF8
+
+          & $rcloneExe version
+          & $rcloneExe lsd r2cineprimee:
+
+          if ($env:R2_BUCKET) {
+            & $rcloneExe lsd "r2cineprimee:$($env:R2_BUCKET)"
+          }
+
+      - name: Keep job alive for manual work
+        shell: pwsh
+        run: |
+          Write-Host "RDP ready."
+          Write-Host "Server (mstsc) address: $env:TAILSCALE_IP"
+          Write-Host "Username: RDP"
+          Write-Host "Password: (your secrets.RDP_PASSWORD)"
+          while ($true) { Start-Sleep -Seconds 300 }
