@@ -23,7 +23,6 @@ jobs:
             -Name "UserAuthentication" -Value 1 -Force
 
           netsh advfirewall firewall delete rule name="RDP-Tailscale" | Out-Null
-
           netsh advfirewall firewall add rule name="RDP-Tailscale" `
             dir=in action=allow protocol=TCP localport=3389 remoteip=100.64.0.0/10 | Out-Null
 
@@ -33,17 +32,12 @@ jobs:
         shell: powershell
         run: |
           $password = "${{ secrets.RDP_PASSWORD }}"
-          if ([string]::IsNullOrWhiteSpace($password)) {
-            Write-Error "Missing secret: RDP_PASSWORD"
-            exit 1
-          }
+          if ([string]::IsNullOrWhiteSpace($password)) { Write-Error "Missing secret: RDP_PASSWORD"; exit 1 }
 
           $securePass = ConvertTo-SecureString $password -AsPlainText -Force
 
           $user = Get-LocalUser -Name "$env:RDP_USER" -ErrorAction SilentlyContinue
-          if (-not $user) {
-            New-LocalUser -Name "$env:RDP_USER" -Password $securePass -AccountNeverExpires | Out-Null
-          }
+          if (-not $user) { New-LocalUser -Name "$env:RDP_USER" -Password $securePass -AccountNeverExpires | Out-Null }
 
           Add-LocalGroupMember -Group "Administrators" -Member "$env:RDP_USER" -ErrorAction SilentlyContinue
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member "$env:RDP_USER" -ErrorAction SilentlyContinue
@@ -70,10 +64,7 @@ jobs:
             $retries++
           }
 
-          if (-not $tsIP) {
-            Write-Error "Tailscale IP not assigned. Exiting."
-            exit 1
-          }
+          if (-not $tsIP) { Write-Error "Tailscale IP not assigned. Exiting."; exit 1 }
 
           echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
           Write-Host "Tailscale IP: $tsIP"
@@ -82,10 +73,7 @@ jobs:
         shell: powershell
         run: |
           $testLocal = Test-NetConnection -ComputerName "127.0.0.1" -Port 3389
-          if (-not $testLocal.TcpTestSucceeded) {
-            Write-Error "Local RDP port 3389 not listening"
-            exit 1
-          }
+          if (-not $testLocal.TcpTestSucceeded) { Write-Error "Local RDP port 3389 not listening"; exit 1 }
           Write-Host "RDP service OK (local)."
 
       - name: Install Ollama (winget) + fix PATH
@@ -100,12 +88,10 @@ jobs:
           )
 
           $ollamaExe = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
-
           if (-not $ollamaExe) {
             $found = Get-ChildItem -Path $env:LOCALAPPDATA -Recurse -Filter "ollama.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
             if ($found) { $ollamaExe = $found.FullName }
           }
-
           if (-not $ollamaExe) { throw "ollama.exe introuvable après installation" }
 
           (Split-Path $ollamaExe) | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
@@ -125,22 +111,19 @@ jobs:
       - name: Force default Ollama path to D (junction fallback)
         shell: pwsh
         run: |
-          if (-not (Test-Path "D:\")) {
-            Write-Host "No D: drive found; skip junction."
-            exit 0
-          }
+          if (-not (Test-Path "D:\")) { Write-Host "No D: drive found; skip junction."; exit 0 }
 
           $target  = "D:\OllamaModels"
           $default = Join-Path $env:USERPROFILE ".ollama\models"
-
           New-Item -ItemType Directory -Path $target -Force | Out-Null
 
-          if (Test-Path $default) {
-            Remove-Item $default -Recurse -Force -ErrorAction SilentlyContinue
+          try {
+            if (Test-Path $default) { Remove-Item $default -Recurse -Force -ErrorAction SilentlyContinue }
+            cmd /c "mklink /J `"$default`" `"$target`""
+            Write-Host "Junction created: $default -> $target"
+          } catch {
+            Write-Host "Junction failed (continuing): $($_.Exception.Message)"
           }
-
-          cmd /c "mklink /J `"$default`" `"$target`""
-          Write-Host "Junction created: $default -> $target"
 
       - name: Pull model (optional but recommended)
         shell: pwsh
@@ -156,20 +139,14 @@ jobs:
 
           $defaultModels = Join-Path $env:USERPROFILE ".ollama\models"
           Write-Host "`nDefault models dir: $defaultModels"
-          if (Test-Path $defaultModels) {
-            Get-ChildItem -Path $defaultModels -Force | Select-Object Name, Mode, LastWriteTime | Format-Table -AutoSize
-          } else {
-            Write-Host "Default models dir not found."
-          }
+          if (Test-Path $defaultModels) { Get-ChildItem -Path $defaultModels -Force | Select-Object Name, Mode, LastWriteTime | Format-Table -AutoSize }
 
           if ($env:OLLAMA_MODELS -and (Test-Path $env:OLLAMA_MODELS)) {
             Write-Host "`nCustom models dir: $env:OLLAMA_MODELS"
             Get-ChildItem -Path $env:OLLAMA_MODELS -Force | Select-Object Name, Mode, LastWriteTime | Format-Table -AutoSize
-          } else {
-            Write-Host "`nCustom models dir not found or OLLAMA_MODELS not set in this step."
           }
 
-      - name: Install OpenClaw (CLI) (quiet, timed)
+      - name: Install OpenClaw (CLI) (quiet, timed) + ensure PATH
         shell: pwsh
         run: |
           Write-Host "Installing OpenClaw..."
@@ -180,17 +157,24 @@ jobs:
 
           npm install -g openclaw@latest --no-progress --loglevel=error
 
+          # npm global bin on Windows is usually %APPDATA%\npm
+          "$env:APPDATA\npm" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
           Write-Host ("OpenClaw install done in: " + ((Get-Date) - $start))
 
-          # Enable Ollama auto-discovery in OpenClaw
           "OLLAMA_API_KEY=local" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
-      - name: Start OpenClaw gateway (no wizard)
+      - name: Configure OpenClaw for Ollama (non-interactive)
         shell: pwsh
         run: |
-          # Default port is usually 18789; bind defaults to loopback. We force both to be explicit.
-          Start-Process -FilePath "openclaw" -ArgumentList "gateway","--port","18789","--bind","loopback","--allow-unconfigured","--force" -NoNewWindow
-          Start-Sleep -Seconds 2
+          ollama launch openclaw --config
+
+      - name: Start OpenClaw gateway (no wizard, background)
+        shell: pwsh
+        run: |
+          # Use cmd.exe because openclaw is typically a .cmd shim on Windows. [page:454]
+          Start-Process -FilePath "cmd.exe" -ArgumentList "/c","openclaw gateway run --port 18789 --bind loopback --allow-unconfigured --dev --force --verbose" -NoNewWindow
+          Start-Sleep -Seconds 3
 
           $t = Test-NetConnection -ComputerName "127.0.0.1" -Port 18789
           if (-not $t.TcpTestSucceeded) { throw "OpenClaw gateway not listening on 127.0.0.1:18789" }
@@ -199,11 +183,10 @@ jobs:
         shell: powershell
         run: |
           Write-Host "`n=== RDP ACCESS ==="
-          Write-Host "Address   : $env:TAILSCALE_IP"
-          Write-Host "User      : $env:RDP_USER"
-          Write-Host "Password  : (use your GitHub secret RDP_PASSWORD)"
-          Write-Host "Model     : $env:OLLAMA_MODEL"
-          Write-Host "Dashboard : http://127.0.0.1:18789/"
+          Write-Host "Address : $env:TAILSCALE_IP"
+          Write-Host "User    : $env:RDP_USER"
+          Write-Host "Password: (use your GitHub secret RDP_PASSWORD)"
+          Write-Host "Model   : $env:OLLAMA_MODEL"
           Write-Host "==================`n"
 
           while ($true) {
