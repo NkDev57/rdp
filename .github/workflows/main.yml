@@ -122,33 +122,88 @@ jobs:
             Write-Host "No D: drive found, keeping default Ollama model location."
           }
 
+      - name: Force default Ollama path to D (junction fallback)
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "D:\")) {
+            Write-Host "No D: drive found; skip junction."
+            exit 0
+          }
+
+          $target  = "D:\OllamaModels"
+          $default = Join-Path $env:USERPROFILE ".ollama\models"
+
+          New-Item -ItemType Directory -Path $target -Force | Out-Null
+
+          if (Test-Path $default) {
+            Remove-Item $default -Recurse -Force -ErrorAction SilentlyContinue
+          }
+
+          cmd /c "mklink /J `"$default`" `"$target`""
+          Write-Host "Junction created: $default -> $target"
+
       - name: Pull model (optional but recommended)
         shell: pwsh
         run: |
           ollama pull $env:OLLAMA_MODEL
 
-      - name: Install OpenClaw (CLI) (quiet)
+      - name: Check Ollama storage + models
         shell: pwsh
         run: |
-          $env:npm_config_loglevel = "error"
+          Write-Host "OLLAMA_MODELS (env): $env:OLLAMA_MODELS"
+          Write-Host "`nollama list:"
+          ollama list
+
+          $defaultModels = Join-Path $env:USERPROFILE ".ollama\models"
+          Write-Host "`nDefault models dir: $defaultModels"
+          if (Test-Path $defaultModels) {
+            Get-ChildItem -Path $defaultModels -Force | Select-Object Name, Mode, LastWriteTime | Format-Table -AutoSize
+          } else {
+            Write-Host "Default models dir not found."
+          }
+
+          if ($env:OLLAMA_MODELS -and (Test-Path $env:OLLAMA_MODELS)) {
+            Write-Host "`nCustom models dir: $env:OLLAMA_MODELS"
+            Get-ChildItem -Path $env:OLLAMA_MODELS -Force | Select-Object Name, Mode, LastWriteTime | Format-Table -AutoSize
+          } else {
+            Write-Host "`nCustom models dir not found or OLLAMA_MODELS not set in this step."
+          }
+
+      - name: Install OpenClaw (CLI) (quiet, timed)
+        shell: pwsh
+        run: |
+          Write-Host "Installing OpenClaw..."
+          $start = Get-Date
+
           $env:npm_config_fund = "false"
           $env:npm_config_audit = "false"
-          npm install -g openclaw@latest --no-progress --silent
+
+          npm install -g openclaw@latest --no-progress --loglevel=error
+
+          Write-Host ("OpenClaw install done in: " + ((Get-Date) - $start))
+
+          # Enable Ollama auto-discovery in OpenClaw
           "OLLAMA_API_KEY=local" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
-      - name: Launch OpenClaw (auto-start gateway) (non-interactive)
+      - name: Start OpenClaw gateway (no wizard)
         shell: pwsh
         run: |
-          "Yes" | ollama launch openclaw --model $env:OLLAMA_MODEL
+          # Default port is usually 18789; bind defaults to loopback. We force both to be explicit.
+          Start-Process -FilePath "openclaw" -ArgumentList "gateway","--port","18789","--bind","loopback","--allow-unconfigured","--force" -NoNewWindow
+          Start-Sleep -Seconds 2
+
+          $t = Test-NetConnection -ComputerName "127.0.0.1" -Port 18789
+          if (-not $t.TcpTestSucceeded) { throw "OpenClaw gateway not listening on 127.0.0.1:18789" }
 
       - name: Maintain connection (RDP info)
         shell: powershell
         run: |
           Write-Host "`n=== RDP ACCESS ==="
-          Write-Host "Address : $env:TAILSCALE_IP"
-          Write-Host "User    : $env:RDP_USER"
-          Write-Host "Password: (use your GitHub secret RDP_PASSWORD)"
-          Write-Host "Model   : $env:OLLAMA_MODEL"
+          Write-Host "Address   : $env:TAILSCALE_IP"
+          Write-Host "User      : $env:RDP_USER"
+          Write-Host "Password  : (use your GitHub secret RDP_PASSWORD)"
+          Write-Host "Model     : $env:OLLAMA_MODEL"
+          Write-Host "Dashboard : http://127.0.0.1:18789/"
           Write-Host "==================`n"
 
           while ($true) {
