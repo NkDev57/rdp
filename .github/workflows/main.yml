@@ -66,13 +66,12 @@ jobs:
           netsh advfirewall firewall delete rule name="RDP-Tailscale"
           netsh advfirewall firewall add rule name="RDP-Tailscale" dir=in action=allow protocol=TCP localport=3389 remoteip=$clientIP
 
-      - name: Install rclone + configure Cloudflare R2
+      - name: Install rclone + configure Cloudflare R2 for RDP user
         shell: pwsh
         env:
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
-          R2_BUCKET: ${{ secrets.R2_BUCKET }}
         run: |
           if ([string]::IsNullOrWhiteSpace($env:R2_ACCESS_KEY_ID)) { throw "Missing R2_ACCESS_KEY_ID" }
           if ([string]::IsNullOrWhiteSpace($env:R2_SECRET_ACCESS_KEY)) { throw "Missing R2_SECRET_ACCESS_KEY" }
@@ -89,13 +88,14 @@ jobs:
           $found = Get-ChildItem -Path $tempDir -Recurse -Filter "rclone.exe" | Select-Object -First 1
           if (-not $found) { throw "rclone.exe introuvable" }
           Copy-Item $found.FullName $rcloneExe -Force
-          $configDir = Join-Path $env:APPDATA "rclone"
-          if (-not (Test-Path $configDir)) { New-Item -ItemType Directory -Path $configDir | Out-Null }
-          $configFile = Join-Path $configDir "rclone.conf"
           $configContent = "[r2cineprimee]`ntype = s3`nprovider = Cloudflare`naccess_key_id = $($env:R2_ACCESS_KEY_ID)`nsecret_access_key = $($env:R2_SECRET_ACCESS_KEY)`nregion = auto`nendpoint = $($env:R2_ENDPOINT)`nacl = private"
-          $configContent | Set-Content -Path $configFile -Encoding UTF8
-          & $rcloneExe version
-          & $rcloneExe lsd "r2cineprimee:$($env:R2_BUCKET)"
+          $rdpConfigDir = "C:\Users\RDP\AppData\Roaming\rclone"
+          New-Item -ItemType Directory -Path $rdpConfigDir -Force | Out-Null
+          $configContent | Set-Content -Path "$rdpConfigDir\rclone.conf" -Encoding UTF8
+          $env:PATH += ";C:\rclone"
+          [Environment]::SetEnvironmentVariable("PATH", $env:PATH + ";C:\rclone", "Machine")
+          Write-Host "rclone installe et configure pour l'utilisateur RDP"
+          & $rcloneExe ls "r2cineprimee:cineprimee-videos" --config "$rdpConfigDir\rclone.conf"
 
       - name: Keep job alive
         shell: pwsh
@@ -105,6 +105,7 @@ jobs:
           Write-Host "USERNAME    : RDP"
           Write-Host "PASSWORD    : (secrets.RDP_PASSWORD)"
           Write-Host "=================================="
+          Write-Host "Dans la session RDP, utilise directement : rclone ls r2cineprimee:cineprimee-videos"
           while ($true) {
             Write-Host "[$(Get-Date -Format 'HH:mm:ss')] Session active..."
             Start-Sleep -Seconds 300
