@@ -12,13 +12,10 @@ jobs:
       - name: Configure Core RDP Settings
         shell: pwsh
         run: |
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
-            -Name "fDenyTSConnections" -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
-            -Name "UserAuthentication" -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
-            -Name "SecurityLayer" -Value 0 -Force
-          netsh advfirewall firewall delete rule name="RDP-Tailscale" | Out-Null
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "SecurityLayer" -Value 0 -Force
+          netsh advfirewall firewall delete rule name="RDP-Tailscale"
           netsh advfirewall firewall add rule name="RDP-Tailscale" dir=in action=allow protocol=TCP localport=3389
           Restart-Service -Name TermService -Force
 
@@ -61,14 +58,13 @@ jobs:
           "TAILSCALE_IP=$tsIP" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           Write-Host "Tailscale IP: $tsIP"
 
-      - name: Restrict RDP to your Tailscale IP only (Option B)
+      - name: Restrict RDP to your Tailscale IP only
         shell: pwsh
         run: |
           $clientIP = "${{ secrets.TS_CLIENT_IP }}"
           if ([string]::IsNullOrWhiteSpace($clientIP)) { throw "Missing secrets.TS_CLIENT_IP" }
-          netsh advfirewall firewall delete rule name="RDP-Tailscale" | Out-Null
-          netsh advfirewall firewall add rule name="RDP-Tailscale" `
-            dir=in action=allow protocol=TCP localport=3389 remoteip=$clientIP
+          netsh advfirewall firewall delete rule name="RDP-Tailscale"
+          netsh advfirewall firewall add rule name="RDP-Tailscale" dir=in action=allow protocol=TCP localport=3389 remoteip=$clientIP
 
       - name: Install rclone + configure Cloudflare R2
         shell: pwsh
@@ -81,42 +77,27 @@ jobs:
           if ([string]::IsNullOrWhiteSpace($env:R2_ACCESS_KEY_ID)) { throw "Missing R2_ACCESS_KEY_ID" }
           if ([string]::IsNullOrWhiteSpace($env:R2_SECRET_ACCESS_KEY)) { throw "Missing R2_SECRET_ACCESS_KEY" }
           if ([string]::IsNullOrWhiteSpace($env:R2_ENDPOINT)) { throw "Missing R2_ENDPOINT" }
-
           $zipPath = Join-Path $env:TEMP "rclone.zip"
           $tempDir = Join-Path $env:TEMP "rclone-temp"
           $installDir = "C:\rclone"
           $rcloneExe = Join-Path $installDir "rclone.exe"
-
           if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
           if (Test-Path $tempDir) { Remove-Item $tempDir -Recurse -Force }
           if (-not (Test-Path $installDir)) { New-Item -ItemType Directory -Path $installDir | Out-Null }
-
           Invoke-WebRequest -Uri "https://downloads.rclone.org/rclone-current-windows-amd64.zip" -OutFile $zipPath
           Expand-Archive -Path $zipPath -DestinationPath $tempDir -Force
-
           $found = Get-ChildItem -Path $tempDir -Recurse -Filter "rclone.exe" | Select-Object -First 1
           if (-not $found) { throw "rclone.exe introuvable" }
           Copy-Item $found.FullName $rcloneExe -Force
-
           $configDir = Join-Path $env:APPDATA "rclone"
           if (-not (Test-Path $configDir)) { New-Item -ItemType Directory -Path $configDir | Out-Null }
           $configFile = Join-Path $configDir "rclone.conf"
-
-          @"
-[r2cineprimee]
-type = s3
-provider = Cloudflare
-access_key_id = $($env:R2_ACCESS_KEY_ID)
-secret_access_key = $($env:R2_SECRET_ACCESS_KEY)
-region = auto
-endpoint = $($env:R2_ENDPOINT)
-acl = private
-"@ | Set-Content -Path $configFile -Encoding UTF8
-
+          $configContent = "[r2cineprimee]`ntype = s3`nprovider = Cloudflare`naccess_key_id = $($env:R2_ACCESS_KEY_ID)`nsecret_access_key = $($env:R2_SECRET_ACCESS_KEY)`nregion = auto`nendpoint = $($env:R2_ENDPOINT)`nacl = private"
+          $configContent | Set-Content -Path $configFile -Encoding UTF8
           & $rcloneExe version
           & $rcloneExe lsd r2cineprimee:
 
-      - name: Keep job alive (RDP session)
+      - name: Keep job alive
         shell: pwsh
         run: |
           Write-Host "=================================="
