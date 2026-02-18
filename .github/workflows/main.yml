@@ -157,7 +157,6 @@ jobs:
           $env:npm_config_audit = "false"
           npm install -g openclaw@latest --no-progress --loglevel=error
 
-          # npm global bin on Windows is usually %APPDATA%\npm
           "$env:APPDATA\npm" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
           Write-Host ("OpenClaw install done in: " + ((Get-Date) - $start))
@@ -165,40 +164,58 @@ jobs:
           # Enable Ollama auto-discovery in OpenClaw
           "OLLAMA_API_KEY=ollama-local" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
-      - name: Configure OpenClaw default model (non-interactive)
+      - name: Start OpenClaw gateway (background + logs)
         shell: pwsh
         run: |
-          # Ajuste si ton schéma de config diffère chez toi : l’idée est de ne pas lancer un wizard interactif.
-          openclaw config set agents.defaults.model.primary "ollama/$env:OLLAMA_MODEL"
-          openclaw config get agents.defaults.model.primary
+          "$env:APPDATA\npm" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          cmd /c "where openclaw"
+          openclaw --version
 
-      - name: Start OpenClaw gateway (no wizard, background)
-        shell: pwsh
-        run: |
-          # Démarre la gateway sur 18789, bind loopback, mode dev si config absente, et force si port occupé. [web:322]
-          Start-Process -FilePath "cmd.exe" -ArgumentList "/c","openclaw gateway --port 18789 --bind loopback --allow-unconfigured --dev --force --verbose" -NoNewWindow
+          $outLog = Join-Path $env:TEMP "openclaw-gateway.out.log"
+          $errLog = Join-Path $env:TEMP "openclaw-gateway.err.log"
+
+          # D'après la doc: la gateway refuse de démarrer sans gateway.mode=local,
+          # donc on ajoute --allow-unconfigured pour ad-hoc/dev, et --dev pour créer une config dev si besoin. [page:0]
+          Start-Process -FilePath "cmd.exe" `
+            -ArgumentList "/c","openclaw gateway run --port 18789 --bind loopback --allow-unconfigured --dev --force --verbose" `
+            -NoNewWindow -PassThru `
+            -RedirectStandardOutput $outLog `
+            -RedirectStandardError $errLog | Out-Null
+
           Start-Sleep -Seconds 2
+          Write-Host "Gateway logs (tail):"
+          if (Test-Path $outLog) { Get-Content $outLog -Tail 120 }
+          if (Test-Path $errLog) { Get-Content $errLog -Tail 120 }
 
-      - name: Health-check OpenClaw (gateway + CLI)
+      - name: Health-check OpenClaw (port + probe + dump logs)
         shell: pwsh
         run: |
+          $outLog = Join-Path $env:TEMP "openclaw-gateway.out.log"
+          $errLog = Join-Path $env:TEMP "openclaw-gateway.err.log"
+
           Write-Host "Waiting for gateway on 127.0.0.1:18789..."
           $ok = $false
-          for ($i=0; $i -lt 20; $i++) {
+          for ($i=0; $i -lt 30; $i++) {
             $t = Test-NetConnection -ComputerName "127.0.0.1" -Port 18789
             if ($t.TcpTestSucceeded) { $ok = $true; break }
             Start-Sleep -Seconds 1
           }
-          if (-not $ok) { throw "Gateway not listening on 127.0.0.1:18789" }
+
+          if (-not $ok) {
+            Write-Host "Gateway NOT listening. Dumping logs..."
+            if (Test-Path $outLog) { Get-Content $outLog -Tail 200 }
+            if (Test-Path $errLog) { Get-Content $errLog -Tail 200 }
+            throw "Gateway not listening on 127.0.0.1:18789"
+          }
 
           Write-Host "`n== openclaw gateway status =="
           openclaw gateway status
 
-          Write-Host "`n== openclaw status --all =="
-          openclaw status --all
+          Write-Host "`n== openclaw gateway health (ws://127.0.0.1:18789) =="
+          openclaw gateway health --url ws://127.0.0.1:18789
 
-          Write-Host "`n== openclaw health --json =="
-          openclaw health --json
+          Write-Host "`n== openclaw gateway probe --json =="
+          openclaw gateway probe --json
 
       - name: Maintain connection (RDP info)
         shell: powershell
